@@ -107,3 +107,24 @@ def test_non_host_cannot_kick_the_host():
 
     with pytest.raises(ValueError, match="방장만"):
         kick_player(room, guest.id, host.id)
+
+
+def test_kicking_current_player_advances_turn_and_removes_after_hand():
+    room, host = create_room("Host")
+    _, target = join_room(room.code, "Target")
+    _, other = join_room(room.code, "Other")
+    start_hand(room)
+    act(room, host.id, "call")
+    assert room.hand["turn_id"] == target.id
+
+    kick_player(room, host.id, target.id)
+    assert target.folded
+    assert room.hand["turn_id"] == other.id
+    act(room, other.id, "check")
+
+    while not room.hand["complete"]:
+        current = next(player for player in room.players if player.id == room.hand["turn_id"])
+        act(room, current.id, "check")
+
+    assert target not in room.players
+    assert room.hand["street"] == "river"
