@@ -10,13 +10,16 @@ function escapeHtml(value = '') {
   return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
 
-function cardMarkup(code, hidden = false, small = false) {
-  if (hidden || !code) return `<span class="playing-card card-back ${small ? 'card-small' : ''}"><i></i><i></i></span>`;
+function cardMarkup(code, hidden = false, small = false, motion = '', delay = 0) {
+  const sizeClass = small ? 'card-small' : '';
+  const motionClass = motion ? ` ${motion}` : '';
+  const motionStyle = motion ? ` style="--motion-delay:${delay}ms"` : '';
+  if (hidden || !code) return `<span class="playing-card card-back ${sizeClass}${motionClass}"${motionStyle}><i></i><i></i></span>`;
   const rank = code.slice(0, -1);
   const suitCode = code.slice(-1).toLowerCase();
   const suit = { h: '♥', d: '♦', c: '♣', s: '♠' }[suitCode] || '♠';
   const color = suitCode === 'h' || suitCode === 'd' ? 'red' : 'black';
-  return `<span class="playing-card ${color} ${small ? 'card-small' : ''}"><b>${escapeHtml(rank)}</b><i>${suit}</i></span>`;
+  return `<span class="playing-card ${color} ${sizeClass}${motionClass}"${motionStyle}><b>${escapeHtml(rank)}</b><i>${suit}</i></span>`;
 }
 
 function showToast(message) {
@@ -137,8 +140,9 @@ function connectSocket() {
   connection.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
     if (message.type === 'state') {
+      const previousState = roomState;
       roomState = message.state;
-      renderRoom();
+      renderRoom(previousState);
     } else if (message.type === 'error') {
       showToast(message.message);
     }
@@ -156,7 +160,7 @@ function send(message) {
   socket.send(JSON.stringify(message));
 }
 
-function renderRoom() {
+function renderRoom(previousState = null) {
   if (!roomState) return;
   const hand = roomState.hand;
   const me = roomState.players.find((player) => player.id === playerId);
@@ -168,6 +172,8 @@ function renderRoom() {
   const defaultTarget = Math.min(maxTarget, Math.max(minTarget, hand?.current_bet || 0));
   const seats = [...roomState.players].sort((a, b) => a.seat - b.seat);
   const board = hand?.board || [];
+  const dealing = Boolean(previousState && hand && previousState.hand_number < roomState.hand_number);
+  const previousBoardCount = previousState?.hand_number === roomState.hand_number ? previousState.hand?.board.length || 0 : board.length;
   const shareUrl = `${location.origin}/?room=${roomState.code}`;
 
   app.innerHTML = `
@@ -183,7 +189,11 @@ function renderRoom() {
           <div class="poker-table">
             <div class="table-stitch"></div>
             <div class="table-center">
-              <div class="board-cards">${Array.from({ length: 5 }, (_, index) => cardMarkup(board[index], !board[index], true)).join('')}</div>
+              <div class="board-cards">${Array.from({ length: 5 }, (_, index) => {
+                const revealed = Boolean(board[index]);
+                const justRevealed = revealed && index >= previousBoardCount && previousBoardCount < board.length;
+                return cardMarkup(board[index], !revealed, true, justRevealed ? 'community-reveal' : '', (index - previousBoardCount) * 110);
+              }).join('')}</div>
               <div class="pot-line"><span class="pot-icon">◆</span><span>POT</span><b>${(hand?.pot || 0).toLocaleString()}</b></div>
               ${roomState.started ? `<div class="street-label">${hand?.complete ? 'HAND COMPLETE' : (hand?.street || '').toUpperCase()}</div>` : `<div class="table-invite">WAITING FOR PLAYERS</div>`}
             </div>
@@ -192,7 +202,7 @@ function renderRoom() {
                 <div class="seat-head"><span class="seat-number">${String(player.seat + 1).padStart(2, '0')}</span>${player.id === roomState.host_id ? '<span class="host-crown">✦</span>' : ''}</div>
                 <div class="seat-name">${escapeHtml(player.name)}${player.id === playerId ? '<i>YOU</i>' : ''}</div>
                 <div class="seat-stack">${player.chips.toLocaleString()} <span>CHIPS</span></div>
-                <div class="seat-cards">${player.hole.length ? player.hole.map((card) => cardMarkup(card, false, true)).join('') : (player.card_count ? cardMarkup('', true, true) + cardMarkup('', true, true) : '<span class="seat-empty">SEAT OPEN</span>')}</div>
+                <div class="seat-cards">${player.hole.length ? player.hole.map((card, cardIndex) => cardMarkup(card, false, true, dealing ? 'deal-card' : '', (cardIndex * seats.length + player.seat) * 75)).join('') : (player.card_count ? cardMarkup('', true, true, dealing ? 'deal-card' : '', player.seat * 75) + cardMarkup('', true, true, dealing ? 'deal-card' : '', (seats.length + player.seat) * 75) : '<span class="seat-empty">SEAT OPEN</span>')}</div>
                 ${player.street_bet ? `<div class="bet-chip">${player.street_bet.toLocaleString()}</div>` : ''}
                 ${player.all_in ? '<div class="player-badge">ALL IN</div>' : player.folded ? '<div class="player-badge">FOLDED</div>' : ''}
               </div>`).join('')}
