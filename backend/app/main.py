@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from .game import ROOMS, act, join_shared_room, kick_player, public_state, start_hand, _player_by_id, _remove_player, reset_tournament
 from pathlib import Path
 from typing import Any
 
@@ -142,14 +142,21 @@ async def room_socket(websocket: WebSocket, code: str):
                 await websocket.close(code=1008, reason="invalid player session")
                 break
             try:
+                # 👇 [여기에 이 코드를 정확히 넣어주세요] 👇
                 if message.get("action") == "start":
                     if player.id != room.host_id:
                         raise ValueError("방장만 토너먼트를 시작할 수 있습니다.")
                     start_hand(room)
+                elif message.get("action") == "reset":
+                    if player.id != room.host_id:
+                        raise ValueError("방장만 토너먼트를 초기화할 수 있습니다.")
+                    reset_tournament(room, player.id)
                 elif message.get("action") == "play":
                     act(room, player.id, str(message.get("move", "")), int(message.get("amount", 0)))
                 else:
                     raise ValueError("지원하지 않는 요청입니다.")
+                # 👆 -------------------------------------- 👆
+                
                 await broadcast(room.code)
             except (ValueError, TypeError) as error:
                 await websocket.send_json({"type": "error", "message": str(error)})
