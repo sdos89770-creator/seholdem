@@ -31,10 +31,11 @@ npm run dev
 
 ## GitHub 배포와 공유 도메인
 
-1. GitHub에 저장소를 만들고 프로젝트 파일을 `main` 브랜치에 올립니다.
-2. Render에서 GitHub 계정을 연결한 다음 `New` → `Blueprint`로 이 저장소를 선택합니다. 저장소 루트의 `render.yaml` 설정을 검토하고 배포를 시작합니다.
-3. 배포가 완료되면 Render가 `https://saekgeun-table.onrender.com` 형식의 공개 주소를 제공합니다. 실제 주소는 Render 대시보드에서 확인해 친구들에게 공유하세요.
-4. 직접 구매한 도메인을 쓰려면 Render 서비스의 `Settings` → `Custom Domains`에 도메인을 등록하고 안내된 DNS 레코드를 도메인 등록 업체에 설정합니다.
+1. GitHub 저장소의 `main` 브랜치에 프로젝트 파일을 올립니다.
+2. Render 대시보드에서 `New` → `Blueprint`를 선택하고 `https://github.com/sdos89770-creator/seholdem`을 연결합니다. 저장소 루트의 `render.yaml` 설정을 검토하고 배포를 시작합니다.
+3. 배포가 완료되면 공개 주소 [https://saekgeun-table.onrender.com](https://saekgeun-table.onrender.com)을 친구들에게 공유합니다.
+4. 현재처럼 공개 Git 저장소 URL로 연결한 경우 GitHub에 push한 뒤 Render에서 `Manual Deploy` → `Deploy latest commit`을 실행합니다. Render에 GitHub 계정을 연결하면 커밋 자동 배포를 사용할 수 있습니다.
+5. 직접 구매한 도메인을 쓰려면 Render 서비스의 `Settings` → `Custom Domains`에 도메인을 등록하고 안내된 DNS 레코드를 도메인 등록 업체에 설정합니다.
 
 Render 무료 서비스는 사용하지 않을 때 잠들 수 있어 첫 접속에 시간이 걸릴 수 있습니다. 방은 단일 서버 인스턴스 메모리에 있으므로 인스턴스를 여러 개로 늘리지 마세요.
 
