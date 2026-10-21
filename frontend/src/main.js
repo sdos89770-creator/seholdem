@@ -1,9 +1,9 @@
 const app = document.querySelector('#app');
-const params = new URLSearchParams(location.search);
 const stored = JSON.parse(sessionStorage.getItem('holdem-session') || 'null');
 let roomState = null;
 let socket = null;
 let playerId = '';
+let playerToken = '';
 let toastTimer;
 
 function escapeHtml(value = '') {
@@ -46,8 +46,6 @@ async function request(path, options = {}) {
 }
 
 function renderLobby() {
-  const joinCode = params.get('room') || '';
-  const invited = Boolean(joinCode);
   app.innerHTML = `
     <main class="lobby-shell">
       <header class="brand-row"><span class="brand-mark">♠</span><span>FRIENDS POKER CLUB</span><span class="brand-status"><i></i> PRIVATE TABLES</span></header>
@@ -60,26 +58,14 @@ function renderLobby() {
       <section class="entry-panel">
         <label class="field-label" for="nickname">플레이어 이름</label>
         <input id="nickname" maxlength="18" autocomplete="nickname" placeholder="테이블에서 쓸 이름" value="${escapeHtml(stored?.name || '')}" />
-        ${invited
-          ? `<button class="primary-button" id="join-invite"><span>초대받은 방 입장</span><b>→</b></button><p class="entry-note">ROOM ${escapeHtml(joinCode)}</p>`
-          : `<button class="primary-button" id="create-room"><span>새 테이블 열기</span><b>↗</b></button>
-        <div class="form-divider"><span></span><i>초대 코드가 있다면</i><span></span></div>
-        <div class="join-row"><input id="room-code" maxlength="5" placeholder="ROOM CODE" /><button id="join-room" aria-label="코드로 입장">입장 <b>→</b></button></div>
-        <p class="entry-note">최대 5명 · 친구 전용 · 무료 플레이</p>`}
+        <button class="primary-button" id="join-table"><span>테이블 입장</span><b>→</b></button>
+        <p class="entry-note">친구들과 함께하는 단 하나의 테이블 · 최대 5명</p>
       </section>
       <footer class="lobby-footer"><span>EST. TONIGHT</span><span>ONE TABLE. GOOD COMPANY.</span></footer>
     </main>`;
-  document.querySelector('#create-room')?.addEventListener('click', createRoom);
-  document.querySelector('#join-invite')?.addEventListener('click', enterRoom);
-  document.querySelector('#join-room')?.addEventListener('click', enterRoom);
-  document.querySelector('#room-code')?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') enterRoom();
-  });
-  document.querySelector('#room-code')?.addEventListener('input', (event) => {
-    event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
-  });
+  document.querySelector('#join-table').addEventListener('click', enterRoom);
   document.querySelector('#nickname').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') invited ? enterRoom() : createRoom();
+    if (event.key === 'Enter') enterRoom();
   });
 }
 
@@ -87,28 +73,14 @@ function playerName() {
   return document.querySelector('#nickname')?.value.trim() || '';
 }
 
-async function createRoom() {
-  try {
-    const name = playerName();
-    const data = await request('/api/rooms', { method: 'POST', body: JSON.stringify({ name }) });
-    saveSession(data, name);
-    roomState = data.state;
-    connectSocket();
-    history.replaceState({}, '', `?room=${data.code}`);
-  } catch (error) {
-    showToast(error.message);
-  }
-}
-
 async function enterRoom() {
   try {
     const name = playerName();
-    const code = (params.get('room') || document.querySelector('#room-code')?.value || '').trim().toUpperCase();
-    const data = await request('/api/rooms/join', { method: 'POST', body: JSON.stringify({ name, code }) });
+    const data = await request('/api/rooms/join', { method: 'POST', body: JSON.stringify({ name }) });
     saveSession(data, name);
     roomState = data.state;
     connectSocket();
-    history.replaceState({}, '', `?room=${data.code}`);
+    history.replaceState({}, '', '/');
   } catch (error) {
     showToast(error.message);
   }
@@ -116,16 +88,18 @@ async function enterRoom() {
 
 function saveSession(data, name) {
   playerId = data.player_id;
-  sessionStorage.setItem('holdem-session', JSON.stringify({ code: data.code, player_id: playerId, name }));
+  playerToken = data.player_token;
+  sessionStorage.setItem('holdem-session', JSON.stringify({ code: data.code, player_id: playerId, player_token: playerToken, name }));
 }
 
 async function resumeSession() {
   try {
     playerId = stored.player_id;
-    const state = await request(`/api/rooms/${stored.code}?player_id=${encodeURIComponent(playerId)}`);
+    playerToken = stored.player_token;
+    const state = await request(`/api/rooms/${stored.code}?token=${encodeURIComponent(playerToken)}`);
     roomState = state;
     connectSocket();
-    history.replaceState({}, '', `?room=${state.code}`);
+    history.replaceState({}, '', '/');
   } catch {
     sessionStorage.removeItem('holdem-session');
     renderLobby();
@@ -135,7 +109,7 @@ async function resumeSession() {
 function connectSocket() {
   socket?.close();
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const connection = new WebSocket(`${protocol}//${location.host}/ws/${roomState.code}?player_id=${encodeURIComponent(playerId)}`);
+  const connection = new WebSocket(`${protocol}//${location.host}/ws/${roomState.code}?token=${encodeURIComponent(playerToken)}`);
   socket = connection;
   connection.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
@@ -147,8 +121,19 @@ function connectSocket() {
       showToast(message.message);
     }
   });
-  connection.addEventListener('close', () => {
-    if (socket === connection && roomState) showToast('연결이 끊겼어요. 페이지를 새로고침해 주세요.');
+  connection.addEventListener('close', (event) => {
+    if (socket !== connection || !roomState) return;
+    if (event.code === 1008 && event.reason === 'removed by host') {
+      socket = null;
+      roomState = null;
+      playerId = '';
+      sessionStorage.removeItem('holdem-session');
+      history.replaceState({}, '', '/');
+      renderLobby();
+      showToast('방장이 테이블에서 내보냈습니다.');
+      return;
+    }
+    showToast('연결이 끊겼어요. 페이지를 새로고침해 주세요.');
   });
 }
 
@@ -174,13 +159,13 @@ function renderRoom(previousState = null) {
   const board = hand?.board || [];
   const dealing = Boolean(previousState && hand && previousState.hand_number < roomState.hand_number);
   const previousBoardCount = previousState?.hand_number === roomState.hand_number ? previousState.hand?.board.length || 0 : board.length;
-  const shareUrl = `${location.origin}/?room=${roomState.code}`;
+  const shareUrl = `${location.origin}/`;
 
   app.innerHTML = `
     <main class="game-shell">
       <header class="game-header">
         <a class="table-brand" href="/" aria-label="처음으로"><span>♠</span> 색근테이블</a>
-        <div class="table-meta"><span class="live-dot"></span><span>PRIVATE GAME</span><b>#${roomState.code}</b></div>
+        <div class="table-meta"><span class="live-dot"></span><span>SHARED TABLE</span></div>
         <div class="header-actions"><button class="icon-button" id="copy-invite" title="초대 링크 복사" aria-label="초대 링크 복사">↗</button><button class="leave-button" id="leave">나가기</button></div>
       </header>
       <div class="game-layout">
@@ -223,10 +208,13 @@ function renderRoom(previousState = null) {
           </div>
         </section>
         <aside class="sidebar">
-          <section class="side-section invite-section"><div class="section-label"><span>INVITE FRIENDS</span><b>01 / 05</b></div><p>좋은 게임은<br /><em>좋은 사람들과.</em></p><button class="invite-button" id="copy-invite-large"><span>초대 링크 복사</span><b>↗</b></button><div class="room-code-line"><span>ROOM CODE</span><strong>${roomState.code}</strong><button id="copy-code" title="방 코드 복사" aria-label="방 코드 복사">⧉</button></div><small class="invite-hint">링크를 카카오톡에 붙여 보내세요.</small></section>
+          <section class="side-section invite-section"><div class="section-label"><span>INVITE FRIENDS</span><b>${seats.length} / 5</b></div><p>좋은 게임은<br /><em>좋은 사람들과.</em></p><button class="invite-button" id="copy-invite-large"><span>초대 링크 복사</span><b>↗</b></button><small class="invite-hint">링크를 보내면 같은 테이블로 입장합니다.</small></section>
           <section class="side-section player-section"><div class="section-label"><span>PLAYERS</span><b>${seats.length} / 5</b></div><div class="player-list">${Array.from({ length: 5 }, (_, index) => {
             const player = seats.find((item) => item.seat === index);
-            return player ? `<div class="player-row ${player.id === playerId ? 'player-me' : ''}"><span class="player-seat">${String(index + 1).padStart(2, '0')}</span><span class="player-avatar">${escapeHtml(player.name.slice(0, 1))}</span><span class="player-info"><b>${escapeHtml(player.name)} ${player.id === playerId ? '<i>YOU</i>' : ''}</b><small>${player.id === roomState.host_id ? 'HOST' : player.folded ? 'FOLDED' : player.all_in ? 'ALL IN' : 'IN THE GAME'}</small></span><strong>${player.chips.toLocaleString()}</strong></div>` : `<div class="player-row vacant"><span class="player-seat">${String(index + 1).padStart(2, '0')}</span><span class="vacant-mark">+</span><span class="player-info"><b>자리 비어 있음</b><small>초대를 기다리는 중</small></span></div>`;
+            const kickButton = player && !player.kicked && me.id === roomState.host_id && player.id !== playerId
+              ? `<button class="kick-button" data-kick="${player.id}" data-name="${escapeHtml(player.name)}" title="플레이어 강퇴" aria-label="${escapeHtml(player.name)} 강퇴">강퇴</button>`
+              : '';
+            return player ? `<div class="player-row ${player.id === playerId ? 'player-me' : ''}"><span class="player-seat">${String(index + 1).padStart(2, '0')}</span><span class="player-avatar">${escapeHtml(player.name.slice(0, 1))}</span><span class="player-info"><b>${escapeHtml(player.name)} ${player.id === playerId ? '<i>YOU</i>' : ''}</b><small>${player.id === roomState.host_id ? 'HOST' : player.kicked ? 'KICKED' : player.folded ? 'FOLDED' : player.all_in ? 'ALL IN' : 'IN THE GAME'}</small></span><strong>${player.chips.toLocaleString()}</strong>${kickButton}</div>` : `<div class="player-row vacant"><span class="player-seat">${String(index + 1).padStart(2, '0')}</span><span class="vacant-mark">+</span><span class="player-info"><b>자리 비어 있음</b><small>초대를 기다리는 중</small></span></div>`;
           }).join('')}</div></section>
           <section class="side-section blinds-section"><div class="section-label"><span>BLINDS</span><b>EVERY 5 HANDS</b></div><div class="blind-values"><div><small>SMALL</small><b>${(hand?.small_blind || 10).toLocaleString()}</b></div><span>/</span><div><small>BIG</small><b>${(hand?.big_blind || 20).toLocaleString()}</b></div></div><div class="blind-progress"><span style="width:${roomState.hand_number % 5 * 20 || (roomState.hand_number ? 100 : 0)}%"></span></div><p>다음 블라인드 상승까지 ${5 - (roomState.hand_number % 5 || 0)} 핸드</p></section>
           <footer class="sidebar-footer"><span>NO MONEY. JUST GLORY.</span><span>색근테이블 · FRIENDS ONLY</span></footer>
@@ -236,8 +224,8 @@ function renderRoom(previousState = null) {
 
   document.querySelector('#copy-invite').addEventListener('click', () => copyText(shareUrl, '초대 링크를 복사했어요.'));
   document.querySelector('#copy-invite-large').addEventListener('click', () => copyText(shareUrl, '초대 링크를 복사했어요.'));
-  document.querySelector('#copy-code').addEventListener('click', () => copyText(roomState.code, '방 코드를 복사했어요.'));
   document.querySelector('#leave').addEventListener('click', leaveRoom);
+  document.querySelectorAll('[data-kick]').forEach((button) => button.addEventListener('click', () => kickPlayer(button.dataset.kick, button.dataset.name)));
   document.querySelector('#start-game')?.addEventListener('click', () => send({ action: 'start' }));
   document.querySelector('#next-hand')?.addEventListener('click', () => send({ action: 'start' }));
   document.querySelectorAll('[data-move]').forEach((button) => button.addEventListener('click', () => {
@@ -265,9 +253,19 @@ async function copyText(text, message) {
   }
 }
 
+async function kickPlayer(targetId, targetName) {
+  if (!window.confirm(`${targetName}님을 테이블에서 강퇴할까요? 진행 중인 핸드는 폴드 처리됩니다.`)) return;
+  try {
+    await request(`/api/rooms/${roomState.code}/players/${encodeURIComponent(targetId)}/kick?requester_token=${encodeURIComponent(playerToken)}`, { method: 'DELETE' });
+    showToast(`${targetName}님을 강퇴했습니다.`);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
 async function leaveRoom() {
   try {
-    await request(`/api/rooms/${roomState.code}/players/${playerId}`, { method: 'DELETE' });
+    await request(`/api/rooms/${roomState.code}/players/${playerId}?requester_token=${encodeURIComponent(playerToken)}`, { method: 'DELETE' });
     socket?.close();
     roomState = null;
     playerId = '';
@@ -279,6 +277,5 @@ async function leaveRoom() {
   }
 }
 
-if (params.get('room') && params.get('room') !== stored?.code) renderLobby();
-else if (stored?.code && stored?.player_id) resumeSession();
+if (stored?.code && stored?.player_id && stored?.player_token) resumeSession();
 else renderLobby();

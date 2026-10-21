@@ -1,6 +1,6 @@
 import pytest
 
-from app.game import ROOMS, act, create_room, join_room, public_state, start_hand
+from app.game import ROOMS, act, create_room, join_room, join_shared_room, kick_player, public_state, start_hand
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +16,15 @@ def test_room_is_limited_to_five_players():
         join_room(room.code, f"Player {index}")
     with pytest.raises(ValueError, match="5명으로 가득"):
         join_room(room.code, "Sixth")
+
+
+def test_everyone_joins_the_same_shared_room():
+    first_room, host = join_shared_room("Host")
+    second_room, guest = join_shared_room("Guest")
+
+    assert first_room is second_room
+    assert first_room.code == "TABLE"
+    assert [player.id for player in first_room.players] == [host.id, guest.id]
 
 
 def test_host_can_start_and_private_cards_are_hidden():
@@ -77,3 +86,24 @@ def test_fold_awards_the_pot_to_the_remaining_player():
     assert room.hand["complete"]
     assert room.last_result[0]["player_id"] == other.id
     assert sum(player.chips for player in room.players) == 2_000
+
+
+def test_host_kick_during_a_hand_folds_player_then_removes_them_after_settlement():
+    room, host = create_room("Host")
+    _, guest = join_room(room.code, "Guest")
+    start_hand(room)
+
+    kick_player(room, host.id, guest.id)
+    assert guest.folded
+    assert guest.kicked
+    assert room.hand["complete"]
+    assert [player.id for player in room.players] == [host.id]
+    assert room.last_result[0]["player_id"] == host.id
+
+
+def test_non_host_cannot_kick_the_host():
+    room, host = create_room("Host")
+    _, guest = join_room(room.code, "Guest")
+
+    with pytest.raises(ValueError, match="방장만"):
+        kick_player(room, guest.id, host.id)

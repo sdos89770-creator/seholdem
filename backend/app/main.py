@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .game import ROOMS, act, create_room, join_room, public_state, start_hand
+from .game import ROOMS, act, join_shared_room, kick_player, public_state, start_hand, _player_by_id, _remove_player
 
 app = FastAPI(title="Holdem Friends")
 app.add_middleware(
@@ -32,13 +32,13 @@ class PlayerRequest(BaseModel):
     name: str
 
 
-class JoinRequest(PlayerRequest):
-    code: str
+def player_for_token(room, token: str):
+    return next((player for player in room.players if player.token == token and not player.kicked), None)
 
 
-def find_player(room_code: str, player_id: str):
+def find_player(room_code: str, token: str):
     room = ROOMS.get(room_code.upper())
-    if room is None or not any(player.id == player_id for player in room.players):
+    if room is None or player_for_token(room, token) is None:
         return None
     return room
 
@@ -48,9 +48,13 @@ async def broadcast(room_code: str) -> None:
     if not room:
         return
     for socket in list(connections.get(room_code, set())):
-        player_id = socket.query_params.get("player_id")
+        player = player_for_token(room, socket.query_params.get("token", ""))
+        if player is None:
+            connections[room_code].discard(socket)
+            await socket.close(code=1008, reason="invalid player session")
+            continue
         try:
-            await socket.send_json({"type": "state", "state": public_state(room, player_id)})
+            await socket.send_json({"type": "state", "state": public_state(room, player.id)})
         except Exception:
             connections[room_code].discard(socket)
 
@@ -60,55 +64,70 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/api/rooms")
-def new_room(request: PlayerRequest) -> dict[str, Any]:
-    try:
-        room, player = create_room(request.name)
-        return {"code": room.code, "player_id": player.id, "state": public_state(room, player.id)}
-    except ValueError as error:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-
 @app.post("/api/rooms/join")
-def enter_room(request: JoinRequest) -> dict[str, Any]:
+def enter_room(request: PlayerRequest) -> dict[str, Any]:
     try:
-        room, player = join_room(request.code, request.name)
-        return {"code": room.code, "player_id": player.id, "state": public_state(room, player.id)}
+        room, player = join_shared_room(request.name)
+        return {"code": room.code, "player_id": player.id, "player_token": player.token, "state": public_state(room, player.id)}
     except ValueError as error:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/api/rooms/{code}")
-def get_room(code: str, player_id: str):
-    room = find_player(code, player_id)
+def get_room(code: str, token: str):
+    room = find_player(code, token)
     if room is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="방 또는 플레이어를 찾을 수 없습니다.")
-    return public_state(room, player_id)
+    return public_state(room, player_for_token(room, token).id)
 
 
 @app.delete("/api/rooms/{code}/players/{player_id}")
-def leave_room(code: str, player_id: str) -> dict[str, bool]:
-    room = find_player(code, player_id)
+async def leave_room(code: str, player_id: str, requester_token: str) -> dict[str, bool]:
+    room = find_player(code, requester_token)
     if room is None:
         raise HTTPException(status_code=404, detail="방 또는 플레이어를 찾을 수 없습니다.")
+    player = player_for_token(room, requester_token)
+    if player.id != player_id:
+        raise HTTPException(status_code=403, detail="자기 자신만 방에서 나갈 수 있습니다.")
     if room.started:
         raise HTTPException(status_code=409, detail="토너먼트가 시작된 뒤에는 자리를 비울 수 없습니다.")
-    room.players = [player for player in room.players if player.id != player_id]
-    for seat, player in enumerate(room.players):
-        player.seat = seat
-    if not room.players:
-        ROOMS.pop(room.code, None)
-    elif room.host_id == player_id:
-        room.host_id = room.players[0].id
+    _remove_player(room, player)
+    await broadcast(room.code)
     return {"ok": True}
+
+
+@app.delete("/api/rooms/{code}/players/{target_id}/kick")
+async def force_kick(code: str, target_id: str, requester_token: str) -> dict[str, Any]:
+    room = find_player(code, requester_token)
+    if room is None:
+        raise HTTPException(status_code=404, detail="방 또는 방장을 찾을 수 없습니다.")
+    requester = player_for_token(room, requester_token)
+    try:
+        target = _player_by_id(room, target_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    try:
+        kick_player(room, requester.id, target.id)
+    except ValueError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+    for socket in list(connections.get(room.code, set())):
+        if socket.query_params.get("token") == target.token:
+            connections[room.code].discard(socket)
+            try:
+                await socket.close(code=1008, reason="removed by host")
+            except RuntimeError:
+                pass
+    await broadcast(room.code)
+    return {"ok": True, "state": public_state(room, requester.id)}
 
 
 @app.websocket("/ws/{code}")
 async def room_socket(websocket: WebSocket, code: str):
-    room = find_player(code, websocket.query_params.get("player_id", ""))
+    token = websocket.query_params.get("token", "")
+    room = find_player(code, token)
     if room is None:
         await websocket.close(code=1008, reason="invalid room or player")
         return
@@ -118,16 +137,17 @@ async def room_socket(websocket: WebSocket, code: str):
     try:
         while True:
             message = await websocket.receive_json()
-            player_id = websocket.query_params.get("player_id", "")
+            player = player_for_token(room, token)
+            if player is None:
+                await websocket.close(code=1008, reason="invalid player session")
+                break
             try:
                 if message.get("action") == "start":
-                    if player_id != room.host_id:
+                    if player.id != room.host_id:
                         raise ValueError("방장만 토너먼트를 시작할 수 있습니다.")
-                    if not room.started:
-                        room.started = True
                     start_hand(room)
                 elif message.get("action") == "play":
-                    act(room, player_id, str(message.get("move", "")), int(message.get("amount", 0)))
+                    act(room, player.id, str(message.get("move", "")), int(message.get("amount", 0)))
                 else:
                     raise ValueError("지원하지 않는 요청입니다.")
                 await broadcast(room.code)

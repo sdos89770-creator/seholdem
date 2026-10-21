@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Gowun+Batang:wght@400;700&display=swap');
+.kick-button{flex:none;border:1px solid rgba(206,105,90,.45);background:transparent;color:#dda091;padding:4px 6px;font-size:8px;white-space:nowrap}.kick-button:hover{background:rgba(206,105,90,.12);border-color:var(--red)}
 .seat-0{--deal-x:0px;--deal-y:160px}.seat-1{--deal-x:-145px;--deal-y:90px}.seat-2{--deal-x:-110px;--deal-y:-100px}.seat-3{--deal-x:110px;--deal-y:-100px}.seat-4{--deal-x:145px;--deal-y:90px}
 .deal-card{animation:deal-card-in 720ms cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--motion-delay,0ms);will-change:transform,opacity}
 @keyframes deal-card-in{from{opacity:0;transform:translate(var(--deal-x,0px),var(--deal-y,0px)) scale(.28) rotate(-15deg)}to{opacity:1;transform:translate(0,0) scale(1) rotate(0)}}

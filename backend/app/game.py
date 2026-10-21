@@ -9,6 +9,7 @@ from typing import Any
 from treys import Card, Evaluator
 
 MAX_PLAYERS = 5
+SHARED_ROOM_CODE = "TABLE"
 STARTING_CHIPS = 1_000
 BASE_SMALL_BLIND = 10
 BASE_BIG_BLIND = 20
@@ -20,12 +21,14 @@ class Player:
     id: str
     name: str
     seat: int
+    token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     chips: int = STARTING_CHIPS
     hole: list[int] = field(default_factory=list)
     folded: bool = False
     all_in: bool = False
     committed: int = 0
     street_bet: int = 0
+    kicked: bool = False
 
 
 @dataclass
@@ -53,6 +56,16 @@ def create_room(name: str) -> tuple[Room, Player]:
     return room, player
 
 
+def join_shared_room(name: str) -> tuple[Room, Player]:
+    room = ROOMS.get(SHARED_ROOM_CODE)
+    if room is None:
+        player = Player(id=secrets.token_urlsafe(9), name=_clean_name(name), seat=0)
+        room = Room(code=SHARED_ROOM_CODE, host_id=player.id, players=[player])
+        ROOMS[room.code] = room
+        return room, player
+    return join_room(room.code, name)
+
+
 def join_room(code: str, name: str) -> tuple[Room, Player]:
     room = ROOMS.get(code.upper())
     if room is None:
@@ -64,6 +77,33 @@ def join_room(code: str, name: str) -> tuple[Room, Player]:
     player = Player(id=secrets.token_urlsafe(9), name=_clean_name(name), seat=len(room.players))
     room.players.append(player)
     return room, player
+
+
+def kick_player(room: Room, requester_id: str, target_id: str) -> None:
+    if requester_id != room.host_id:
+        raise ValueError("방장만 플레이어를 강퇴할 수 있습니다.")
+    if requester_id == target_id:
+        raise ValueError("방장은 자기 자신을 강퇴할 수 없습니다.")
+    target = _player_by_id(room, target_id)
+    if target.kicked:
+        raise ValueError("이미 강퇴된 플레이어입니다.")
+
+    hand = room.hand
+    if hand and not hand["complete"]:
+        target.folded = True
+        target.kicked = True
+        hand["acted"].add(target.id)
+        _refresh_pot(room)
+        contenders = [player for player in room.players if not player.folded]
+        if len(contenders) == 1:
+            _award_uncontested(room, contenders[0])
+        elif _round_complete(room):
+            _advance_street(room)
+        elif hand["turn_id"] == target.id:
+            hand["turn_id"] = _next_actor(room, target.seat)
+        return
+
+    _remove_player(room, target)
 
 
 def start_hand(room: Room) -> None:
@@ -124,6 +164,8 @@ def act(room: Room, player_id: str, action: str, amount: int = 0) -> None:
     if not hand or hand["complete"]:
         raise ValueError("진행 중인 핸드가 없습니다.")
     player = _player_by_id(room, player_id)
+    if player.kicked:
+        raise ValueError("강퇴된 플레이어는 행동할 수 없습니다.")
     if hand["turn_id"] != player_id:
         raise ValueError("현재 차례가 아닙니다.")
     if player.folded or player.all_in:
@@ -175,6 +217,8 @@ def public_state(room: Room, viewer_id: str | None = None) -> dict[str, Any]:
     hand = room.hand
     players = []
     for player in room.players:
+        if player.kicked:
+            continue
         show_hole = bool(hand and hand["complete"] and not player.folded) or player.id == viewer_id
         players.append({
             "id": player.id,
@@ -185,6 +229,7 @@ def public_state(room: Room, viewer_id: str | None = None) -> dict[str, Any]:
             "card_count": len(player.hole),
             "folded": player.folded,
             "all_in": player.all_in,
+            "kicked": player.kicked,
             "street_bet": player.street_bet,
             "is_host": player.id == room.host_id,
         })
@@ -224,6 +269,17 @@ def _player_by_id(room: Room, player_id: str) -> Player:
         if player.id == player_id:
             return player
     raise ValueError("플레이어를 찾을 수 없습니다.")
+
+
+def _remove_player(room: Room, player: Player) -> None:
+    room.players.remove(player)
+    if not room.started:
+        for seat, remaining in enumerate(room.players):
+            remaining.seat = seat
+    if room.host_id == player.id and room.players:
+        room.host_id = room.players[0].id
+    if not room.players:
+        ROOMS.pop(room.code, None)
 
 
 def _player_after(room: Room, seat: int, players: list[Player]) -> Player:
@@ -339,3 +395,6 @@ def _complete_hand(room: Room) -> None:
     hand["complete"] = True
     hand["turn_id"] = None
     _refresh_pot(room)
+    for player in list(room.players):
+        if player.kicked:
+            _remove_player(room, player)
