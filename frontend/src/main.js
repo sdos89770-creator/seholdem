@@ -44,6 +44,7 @@ async function request(path, options = {}) {
 
 function renderLobby() {
   const joinCode = params.get('room') || '';
+  const invited = Boolean(joinCode);
   app.innerHTML = `
     <main class="lobby-shell">
       <header class="brand-row"><span class="brand-mark">♠</span><span>FRIENDS POKER CLUB</span><span class="brand-status"><i></i> PRIVATE TABLES</span></header>
@@ -56,23 +57,26 @@ function renderLobby() {
       <section class="entry-panel">
         <label class="field-label" for="nickname">플레이어 이름</label>
         <input id="nickname" maxlength="18" autocomplete="nickname" placeholder="테이블에서 쓸 이름" value="${escapeHtml(stored?.name || '')}" />
-        <button class="primary-button" id="create-room"><span>새 테이블 열기</span><b>↗</b></button>
+        ${invited
+          ? `<button class="primary-button" id="join-invite"><span>초대받은 방 입장</span><b>→</b></button><p class="entry-note">ROOM ${escapeHtml(joinCode)}</p>`
+          : `<button class="primary-button" id="create-room"><span>새 테이블 열기</span><b>↗</b></button>
         <div class="form-divider"><span></span><i>초대 코드가 있다면</i><span></span></div>
-        <div class="join-row"><input id="room-code" maxlength="5" placeholder="ROOM CODE" value="${escapeHtml(joinCode)}" /><button id="join-room" aria-label="코드로 입장">입장 <b>→</b></button></div>
-        <p class="entry-note">최대 5명 · 친구 전용 · 무료 플레이</p>
+        <div class="join-row"><input id="room-code" maxlength="5" placeholder="ROOM CODE" /><button id="join-room" aria-label="코드로 입장">입장 <b>→</b></button></div>
+        <p class="entry-note">최대 5명 · 친구 전용 · 무료 플레이</p>`}
       </section>
       <footer class="lobby-footer"><span>EST. TONIGHT</span><span>ONE TABLE. GOOD COMPANY.</span></footer>
     </main>`;
-  document.querySelector('#create-room').addEventListener('click', createRoom);
-  document.querySelector('#join-room').addEventListener('click', enterRoom);
-  document.querySelector('#room-code').addEventListener('keydown', (event) => {
+  document.querySelector('#create-room')?.addEventListener('click', createRoom);
+  document.querySelector('#join-invite')?.addEventListener('click', enterRoom);
+  document.querySelector('#join-room')?.addEventListener('click', enterRoom);
+  document.querySelector('#room-code')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') enterRoom();
   });
-  document.querySelector('#room-code').addEventListener('input', (event) => {
+  document.querySelector('#room-code')?.addEventListener('input', (event) => {
     event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
   });
   document.querySelector('#nickname').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') createRoom();
+    if (event.key === 'Enter') invited ? enterRoom() : createRoom();
   });
 }
 
@@ -96,7 +100,7 @@ async function createRoom() {
 async function enterRoom() {
   try {
     const name = playerName();
-    const code = document.querySelector('#room-code').value.trim().toUpperCase();
+    const code = (params.get('room') || document.querySelector('#room-code')?.value || '').trim().toUpperCase();
     const data = await request('/api/rooms/join', { method: 'POST', body: JSON.stringify({ name, code }) });
     saveSession(data, name);
     roomState = data.state;
