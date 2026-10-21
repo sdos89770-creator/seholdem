@@ -1,8 +1,9 @@
 from __future__ import annotations
-
+from .game import reset_tournament
 import random
 import secrets
 import string
+
 from dataclasses import dataclass, field
 from typing import Any
 
