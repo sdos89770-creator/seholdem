@@ -172,3 +172,18 @@ def frontend_route(path: str) -> FileResponse:
     if requested_file.is_relative_to(root.resolve()) and requested_file.is_file():
         return FileResponse(requested_file)
     return FileResponse(index_file)
+
+@app.post("/api/rooms/{code}/reset")
+async def api_reset_tournament(code: str, requester_token: str) -> dict[str, Any]:
+    """방장이 토너먼트를 초기화하고 새 게임을 준비합니다."""
+    room = find_player(code, requester_token)
+    if room is None:
+        raise HTTPException(status_code=404, detail="방 또는 플레이어를 찾을 수 없습니다.")
+    requester = player_for_token(room, requester_token)
+    try:
+        reset_tournament(room, requester.id)
+    except ValueError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    
+    await broadcast(room.code)
+    return {"ok": True, "state": public_state(room, requester.id)}
