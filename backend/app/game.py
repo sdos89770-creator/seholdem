@@ -57,13 +57,14 @@ def create_room(name: str) -> tuple[Room, Player]:
 
 
 def join_shared_room(name: str) -> tuple[Room, Player]:
+    cleaned_name = _clean_name(name)
     room = ROOMS.get(SHARED_ROOM_CODE)
     if room is None:
-        player = Player(id=secrets.token_urlsafe(9), name=_clean_name(name), seat=0)
+        player = Player(id=secrets.token_urlsafe(9), name=cleaned_name, seat=0)
         room = Room(code=SHARED_ROOM_CODE, host_id=player.id, players=[player])
         ROOMS[room.code] = room
         return room, player
-    return join_room(room.code, name)
+    return join_room(room.code, cleaned_name)
 
 
 def join_room(code: str, name: str) -> tuple[Room, Player]:
@@ -74,9 +75,37 @@ def join_room(code: str, name: str) -> tuple[Room, Player]:
         raise ValueError("이미 토너먼트가 시작된 방입니다.")
     if len(room.players) >= MAX_PLAYERS:
         raise ValueError("이 방은 5명으로 가득 찼습니다.")
-    player = Player(id=secrets.token_urlsafe(9), name=_clean_name(name), seat=len(room.players))
+    
+    cleaned_name = _clean_name(name)
+    # 중복 닉네임 체크
+    if any(p.name == cleaned_name for p in room.players):
+        raise ValueError("이미 사용 중인 닉네임입니다. 다른 닉네임을 입력해 주세요.")
+
+    player = Player(id=secrets.token_urlsafe(9), name=cleaned_name, seat=len(room.players))
     room.players.append(player)
     return room, player
+
+
+def reset_tournament(room: Room, requester_id: str) -> None:
+    """토너먼트를 완전히 초기화하여 모든 플레이어의 칩과 상태를 처음으로 되돌립니다."""
+    if requester_id != room.host_id:
+        raise ValueError("방장만 토너먼트를 초기화할 수 있습니다.")
+    
+    room.started = False
+    room.hand_number = 0
+    room.dealer_seat = -1
+    room.hand = None
+    room.last_result = []
+    
+    for idx, player in enumerate(room.players):
+        player.chips = STARTING_CHIPS
+        player.hole = []
+        player.folded = False
+        player.all_in = False
+        player.committed = 0
+        player.street_bet = 0
+        player.kicked = False
+        player.seat = idx
 
 
 def kick_player(room: Room, requester_id: str, target_id: str) -> None:
